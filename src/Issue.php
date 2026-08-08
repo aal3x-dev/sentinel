@@ -1,0 +1,387 @@
+<?php
+
+/**
+ * -------------------------------------------------------------------------
+ * Sentinel plugin for GLPI
+ * -------------------------------------------------------------------------
+ *
+ * MIT License
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * -------------------------------------------------------------------------
+ * @copyright Copyright (C) 2026 by the Sentinel plugin team.
+ * @license   MIT https://opensource.org/licenses/mit-license.php
+ * @link      https://github.com/pluginsGLPI/sentinel
+ * -------------------------------------------------------------------------
+ */
+
+namespace GlpiPlugin\Sentinel;
+
+use CommonDBTM;
+use CronTask;
+use Session;
+use Toolbox;
+
+/**
+ * One row of glpi_plugin_sentinel_issues = one problem detected by ANY
+ * registered check (see CheckInterface / CheckRunner) - an orphan DB
+ * record, an orphan file on disk, a missing file for a DB record, etc.
+ *
+ * An Issue never disappears by itself: CheckRunner (re)confirms it on
+ * every full scan (date_last_seen is bumped) or, if it's not detected
+ * anymore (already fixed by someone/something else), it's purged
+ * automatically at the end of that scan.
+ *
+ * Two different kinds of "target" an Issue can point to:
+ *  - a DB row:  source_table + source_id are set, path is null.
+ *  - a file:    path is set, source_table/source_id are null.
+ * applyCleanup() branches on which one is set.
+ */
+class Issue extends CommonDBTM
+{
+    public static $rightname = 'plugin_sentinel';
+
+    public const STATUS_NEW     = 'new';
+    public const STATUS_IGNORED = 'ignored';
+
+    public static function getTypeName($nb = 0)
+    {
+        return _n('Issue', 'Issues', $nb, 'sentinel');
+    }
+
+    public static function getMenuName($nb = 0)
+    {
+        return self::getTypeName($nb);
+    }
+
+    public static function getMenuContent()
+    {
+        $search = self::getSearchURL(false);
+
+        return [
+            'title' => __('Health checks', 'sentinel'),
+            'page'  => $search,
+            'icon'  => 'ti ti-shield-check',
+            'options' => [
+                'sentinel' => [
+                    'title' => self::getTypeName(2),
+                    'page'  => $search,
+                    'links' => [
+                        'search' => $search,
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * Records a detection from a Check: creates the Issue on first
+     * detection, or just bumps date_last_seen (and stats) if it was
+     * already known - status (new/ignored) is left untouched so an
+     * admin's "ignore" choice survives repeated scans.
+     *
+     * @param array  $data       check_key, category, source_table,
+     *                           source_id, path, field, ref_itemtype,
+     *                           ref_table, ref_id, reason
+     * @param string $scan_start timestamp of the current scan run
+     * @param array  &$stats     running totals, updated in place
+     */
+    public static function upsert(array $data, string $scan_start, array &$stats): void
+    {
+        global $DB;
+
+        $data += [
+            'source_table' => null,
+            'source_id'    => null,
+            'path'         => null,
+            'field'        => null,
+            'ref_itemtype' => null,
+            'ref_table'    => null,
+            'ref_id'       => null,
+        ];
+
+        $criteria = ['check_key' => $data['check_key']];
+        // Identity of an Issue: if it points at a DB row (source_table is
+        // set), that row's identity wins even when we also stored an
+        // informational `path` (e.g. "file missing for this document").
+        // Only a pure filesystem issue (no DB row at all) is identified
+        // by its path.
+        if ($data['source_table'] !== null) {
+            $criteria['source_table'] = $data['source_table'];
+            $criteria['source_id']    = $data['source_id'];
+            $criteria['field']        = $data['field'];
+        } else {
+            $criteria['path'] = $data['path'];
+        }
+
+        $existing = $DB->request([
+            'FROM'  => self::getTable(),
+            'WHERE' => $criteria,
+            'LIMIT' => 1,
+        ]);
+
+        if (count($existing) > 0) {
+            $row = $existing->current();
+            $DB->update(self::getTable(), [
+                'date_last_seen' => $scan_start,
+                'ref_id'         => $data['ref_id'],
+                'reason'         => $data['reason'],
+            ], ['id' => $row['id']]);
+            $stats['confirmed']++;
+            return;
+        }
+
+        $item = new self();
+        $item->add([
+            'check_key'      => $data['check_key'],
+            'category'       => $data['category'],
+            'source_table'   => $data['source_table'],
+            'source_id'      => $data['source_id'],
+            'path'           => $data['path'],
+            'field'          => $data['field'],
+            'ref_itemtype'   => $data['ref_itemtype'],
+            'ref_table'      => $data['ref_table'],
+            'ref_id'         => $data['ref_id'],
+            'reason'         => $data['reason'],
+            'status'         => self::STATUS_NEW,
+            'date_discover'  => $scan_start,
+            'date_last_seen' => $scan_start,
+        ]);
+        $stats['new']++;
+    }
+
+    /**
+     * Maintenance action (manual, never automatic from cron): deletes the
+     * bookkeeping row for Issues the admin already marked "ignored", once
+     * they've stayed ignored for longer than Config's retention_days.
+     * Never touches the underlying data/file the Issue pointed to - only
+     * cleans up this plugin's own report table. Age is measured from
+     * date_discover, not date_last_seen: an ignored Issue still gets
+     * reconfirmed (and date_last_seen bumped) on every scan, so
+     * date_last_seen would never actually "age".
+     */
+    public static function purgeOldIgnored(): int
+    {
+        global $DB;
+
+        $days = (int) Config::getConfig()['retention_days'];
+        if ($days <= 0) {
+            return 0;
+        }
+
+        $threshold = date('Y-m-d H:i:s', strtotime("-{$days} days"));
+
+        $DB->delete(self::getTable(), [
+            'status'        => self::STATUS_IGNORED,
+            'date_discover' => ['<', $threshold],
+        ]);
+
+        return $DB->affectedRows();
+    }
+
+    public function rawSearchOptions()
+    {
+        $options   = [];
+        $options[] = ['id' => 'common', 'name' => __('Characteristics')];
+
+        $options[] = [
+            'id' => 1, 'table' => self::getTable(), 'field' => 'check_key',
+            'name' => __('Check', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 2, 'table' => self::getTable(), 'field' => 'category',
+            'name' => __('Category', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 3, 'table' => self::getTable(), 'field' => 'source_table',
+            'name' => __('Table', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 4, 'table' => self::getTable(), 'field' => 'source_id',
+            'name' => __('Row ID', 'sentinel'), 'datatype' => 'integer',
+        ];
+        $options[] = [
+            'id' => 5, 'table' => self::getTable(), 'field' => 'path',
+            'name' => __('File path', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 6, 'table' => self::getTable(), 'field' => 'field',
+            'name' => __('Field', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 7, 'table' => self::getTable(), 'field' => 'ref_itemtype',
+            'name' => __('Referenced itemtype', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 8, 'table' => self::getTable(), 'field' => 'ref_table',
+            'name' => __('Expected target table', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 9, 'table' => self::getTable(), 'field' => 'ref_id',
+            'name' => __('Missing ID', 'sentinel'), 'datatype' => 'integer',
+        ];
+        $options[] = [
+            'id' => 10, 'table' => self::getTable(), 'field' => 'reason',
+            'name' => __('Reason', 'sentinel'), 'datatype' => 'string',
+        ];
+        $options[] = [
+            'id' => 11, 'table' => self::getTable(), 'field' => 'status',
+            'name' => __('Status', 'sentinel'), 'datatype' => 'specific', 'searchtype' => ['equals'],
+        ];
+        $options[] = [
+            'id' => 12, 'table' => self::getTable(), 'field' => 'date_discover',
+            'name' => __('First detected', 'sentinel'), 'datatype' => 'datetime',
+        ];
+        $options[] = [
+            'id' => 13, 'table' => self::getTable(), 'field' => 'date_last_seen',
+            'name' => __('Last confirmed', 'sentinel'), 'datatype' => 'datetime',
+        ];
+
+        return $options;
+    }
+
+    /**
+     * Fixes the issue: deletes the orphan DB row (if source_table/id are
+     * set) or the orphan file on disk (if path is set), then removes the
+     * bookkeeping Issue. This is the one and only place that deletes
+     * arbitrary GLPI data/files, and it requires the PURGE bit of the
+     * plugin_sentinel right.
+     */
+    public function applyCleanup(): bool
+    {
+        global $DB;
+
+        if (!Session::haveRight(self::$rightname, PURGE)) {
+            Session::addMessageAfterRedirect(
+                __('You are not allowed to delete this data.', 'sentinel'),
+                false,
+                ERROR
+            );
+            return false;
+        }
+
+        if (!empty($this->fields['source_table'])) {
+            return $this->applyRowCleanup();
+        }
+
+        if (!empty($this->fields['path'])) {
+            return $this->applyFileCleanup();
+        }
+
+        // Neither a row nor a path is set - nothing to clean up besides
+        // the bookkeeping row itself (should not normally happen).
+        return $this->delete(['id' => $this->getID()], true);
+    }
+
+    private function applyRowCleanup(): bool
+    {
+        global $DB;
+
+        $table = $this->fields['source_table'];
+        $id    = (int) $this->fields['source_id'];
+
+        if (!$this->isKnownGlpiTable($table)) {
+            // Refuse to touch anything that does not look like a GLPI table,
+            // e.g. if the stored value was somehow corrupted.
+            Toolbox::logError("Sentinel: refused cleanup on suspicious table name '$table'");
+            return false;
+        }
+
+        if (!$DB->tableExists($table)) {
+            // Table is already gone (plugin fully uninstalled since) - just drop bookkeeping.
+            return $this->delete(['id' => $this->getID()], true);
+        }
+
+        $DB->delete($table, ['id' => $id]);
+
+        return $this->delete(['id' => $this->getID()], true);
+    }
+
+    /**
+     * Deletes an orphan FILE from disk. Confined to GLPI_DOC_DIR and its
+     * realpath, so a corrupted/tampered `path` value can never be used to
+     * delete something outside the documents storage tree.
+     */
+    private function applyFileCleanup(): bool
+    {
+        if (!defined('GLPI_DOC_DIR')) {
+            Toolbox::logError('Sentinel: GLPI_DOC_DIR is not defined, refusing file cleanup.');
+            return false;
+        }
+
+        $base = realpath(GLPI_DOC_DIR);
+        $full = realpath(GLPI_DOC_DIR . '/' . $this->fields['path']);
+
+        if (
+            $base === false
+            || $full === false
+            || strncmp($full, $base . DIRECTORY_SEPARATOR, strlen($base) + 1) !== 0
+        ) {
+            Toolbox::logError("Sentinel: refused to delete file outside GLPI_DOC_DIR: '{$this->fields['path']}'");
+            return false;
+        }
+
+        if (is_file($full)) {
+            @unlink($full);
+        }
+
+        return $this->delete(['id' => $this->getID()], true);
+    }
+
+    private function isKnownGlpiTable(string $table): bool
+    {
+        return (bool) preg_match('/^glpi_[a-z0-9_]+$/', $table)
+            && $table !== self::getTable();
+    }
+
+    /**
+     * Declares the automatic action to GLPI.
+     */
+    public static function cronInfo($name)
+    {
+        switch ($name) {
+            case 'scan':
+                return [
+                    'description' => __('Run all enabled health checks and update the report', 'sentinel'),
+                ];
+        }
+        return [];
+    }
+
+    /**
+     * Automatic action callback. Runs all enabled checks only - never
+     * deletes/fixes anything, regardless of the auto_clean setting (kept
+     * for a future, explicitly-opt-in iteration).
+     */
+    public static function cronScan(CronTask $task): int
+    {
+        $stats = CheckRunner::run();
+
+        $task->addVolume($stats['new'] + $stats['confirmed']);
+        $task->log(sprintf(
+            'Sentinel: %d new, %d confirmed, %d resolved (%d checks run).',
+            $stats['new'],
+            $stats['confirmed'],
+            $stats['resolved'],
+            $stats['checks_run']
+        ));
+
+        return 1;
+    }
+}
