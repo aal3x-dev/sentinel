@@ -89,6 +89,9 @@ class CheckRunner
             $stats['resolved'] += $DB->affectedRows();
         }
 
+        Config::recordScanResult($stats);
+        Issue::logScanResult($stats);
+
         return $stats;
     }
 

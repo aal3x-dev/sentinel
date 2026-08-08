@@ -97,6 +97,44 @@ class Config extends GlpiConfig
         return array_merge(self::getDefaults(), $stored);
     }
 
+    /**
+     * Persists the outcome of a CheckRunner::run() so it can be shown
+     * later regardless of what triggered that run - the manual button,
+     * MODE_INTERNAL firing on someone else's page view, or (if ever
+     * configured) a real system cron. Without this, a scan triggered by
+     * the internal cron would be invisible: nobody sees the one-time
+     * flash message a manual click gets.
+     */
+    public static function recordScanResult(array $stats): void
+    {
+        GlpiConfig::setConfigurationValues(self::CONTEXT, [
+            'last_scan_at'    => date('Y-m-d H:i:s'),
+            'last_scan_stats' => json_encode($stats),
+        ]);
+    }
+
+    /**
+     * @return array{at: ?string, stats: ?array} 'at' is null if no scan
+     *         has ever run yet.
+     */
+    public static function getLastScanResult(): array
+    {
+        $stored = GlpiConfig::getConfigurationValues(self::CONTEXT);
+
+        $stats = null;
+        if (!empty($stored['last_scan_stats'])) {
+            $decoded = json_decode($stored['last_scan_stats'], true);
+            if (is_array($decoded)) {
+                $stats = $decoded;
+            }
+        }
+
+        return [
+            'at'    => $stored['last_scan_at'] ?? null,
+            'stats' => $stats,
+        ];
+    }
+
     public static function getTypeName($nb = 0)
     {
         return __('Sentinel', 'sentinel');

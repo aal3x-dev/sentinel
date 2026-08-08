@@ -35,6 +35,7 @@ namespace GlpiPlugin\Sentinel;
 
 use CommonDBTM;
 use CronTask;
+use Plugin;
 use Session;
 use Toolbox;
 
@@ -65,6 +66,20 @@ class Issue extends CommonDBTM
         return _n('Issue', 'Issues', $nb, 'sentinel');
     }
 
+    /**
+     * Absolute-from-webroot path to the report page. Deliberately NOT
+     * built via self::getSearchURL() - GLPI's auto-derivation of that URL
+     * from a plugin-namespaced class has been unreliable in this GLPI
+     * version (it dropped the /plugins/sentinel/ prefix entirely in
+     * testing, pointing at a nonexistent core front/issue.php). Hardcoded
+     * paths matching our actual front/ files are the only thing that's
+     * proven reliable throughout this plugin.
+     */
+    public static function getReportURL(): string
+    {
+        return Plugin::getWebDir('sentinel') . '/front/issue.php';
+    }
+
     public static function getMenuName($nb = 0)
     {
         return self::getTypeName($nb);
@@ -72,7 +87,7 @@ class Issue extends CommonDBTM
 
     public static function getMenuContent()
     {
-        $search = self::getSearchURL(false);
+        $search = self::getReportURL();
 
         return [
             'title' => __('Health checks', 'sentinel'),
@@ -351,6 +366,31 @@ class Issue extends CommonDBTM
     }
 
     /**
+     * Writes to the SAME glpi_crontasklogs rows GLPI already shows on the
+     * "scan" automatic action's own Logs/Historical tabs - so a manual
+     * "Run all health checks now" click shows up there exactly like a
+     * cron-triggered run does, instead of needing a separate log. Called
+     * from CheckRunner::run() itself so every trigger path (manual
+     * button, MODE_INTERNAL) is covered in one place.
+     */
+    public static function logScanResult(array $stats): void
+    {
+        $task = new CronTask();
+        if (!$task->getFromDBByCrit(['itemtype' => self::class, 'name' => 'scan'])) {
+            return; // task not registered yet (e.g. mid-install) - nothing to log to
+        }
+
+        $task->log(sprintf(
+            'Sentinel: %d new, %d confirmed, %d resolved (%d checks run).',
+            $stats['new'],
+            $stats['confirmed'],
+            $stats['resolved'],
+            $stats['checks_run']
+        ));
+        $task->addVolume($stats['new'] + $stats['confirmed']);
+    }
+
+    /**
      * Declares the automatic action to GLPI.
      */
     public static function cronInfo($name)
@@ -367,20 +407,14 @@ class Issue extends CommonDBTM
     /**
      * Automatic action callback. Runs all enabled checks only - never
      * deletes/fixes anything, regardless of the auto_clean setting (kept
-     * for a future, explicitly-opt-in iteration).
+     * for a future, explicitly-opt-in iteration). Logging to $task
+     * happens inside CheckRunner::run() -> logScanResult(), same as a
+     * manually triggered scan, so there's a single source of truth for
+     * what happens after any scan completes.
      */
     public static function cronScan(CronTask $task): int
     {
-        $stats = CheckRunner::run();
-
-        $task->addVolume($stats['new'] + $stats['confirmed']);
-        $task->log(sprintf(
-            'Sentinel: %d new, %d confirmed, %d resolved (%d checks run).',
-            $stats['new'],
-            $stats['confirmed'],
-            $stats['resolved'],
-            $stats['checks_run']
-        ));
+        CheckRunner::run();
 
         return 1;
     }

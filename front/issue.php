@@ -26,7 +26,7 @@ if (isset($_POST['scan_now'])) {
         $stats['confirmed'],
         $stats['resolved']
     ));
-    Html::redirect(Issue::getSearchURL());
+    Html::redirect(Issue::getReportURL());
 }
 
 // Maintenance: drop the bookkeeping for issues the admin already ignored,
@@ -39,7 +39,27 @@ if (isset($_POST['purge_ignored'])) {
         __('%d old ignored issues purged.', 'sentinel'),
         $purged
     ));
-    Html::redirect(Issue::getSearchURL());
+    Html::redirect(Issue::getReportURL());
+}
+
+if (Session::haveRight('plugin_sentinel', READ)) {
+    $last = Config::getLastScanResult();
+
+    echo "<div class='center' style='margin: 1em 0;'>";
+    if ($last['at'] === null) {
+        echo "<span class='text-muted'>" . __('No scan has run yet.', 'sentinel') . "</span>";
+    } else {
+        $stats = $last['stats'] ?? [];
+        echo "<span class='text-muted'>" . sprintf(
+            __('Last scan: %1$s — %2$d checks run, %3$d new, %4$d confirmed, %5$d resolved.', 'sentinel'),
+            Html::convDateTime($last['at']),
+            $stats['checks_run'] ?? 0,
+            $stats['new'] ?? 0,
+            $stats['confirmed'] ?? 0,
+            $stats['resolved'] ?? 0
+        ) . "</span>";
+    }
+    echo "</div>";
 }
 
 if (Session::haveRight('plugin_sentinel', UPDATE)) {

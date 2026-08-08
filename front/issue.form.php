@@ -25,7 +25,7 @@ if (isset($_POST['cleanup'])) {
     // Removes only the bookkeeping row, leaves the orphan data untouched.
     Session::checkRight('plugin_sentinel', UPDATE);
     $issue->delete(['id' => (int) $_POST['id']], true);
-    $issue->redirectToList();
+    Html::redirect(Issue::getReportURL());
 } else {
     $id = (int) ($_GET['id'] ?? 0);
     Html::header(
