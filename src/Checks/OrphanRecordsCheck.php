@@ -110,7 +110,10 @@ class OrphanRecordsCheck implements CheckInterface
     private function getSchemaName(): string
     {
         global $DB;
-        $res = $DB->query('SELECT DATABASE() AS dbname');
+        // DBmysql::query() is prohibited in GLPI 11 for third-party code
+        // ("Executing direct queries is not allowed!"). doQuery() is the
+        // sanctioned replacement for a self-crafted SQL string.
+        $res = $DB->doQuery('SELECT DATABASE() AS dbname');
         $row = $DB->fetchAssoc($res);
         return $row['dbname'];
     }
