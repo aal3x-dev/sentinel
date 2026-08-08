@@ -99,22 +99,38 @@ function plugin_sentinel_install(): bool
     $migration->executeMigration();
 
     // Register the automatic action.
-    // MODE_EXTERNAL: does NOT run automatically on page views, only via the
-    // real system cron (php front/cron.php) or manually from Setup >
-    // Automatic actions. A full health scan is deliberately not something
-    // that fires silently on a random page load.
+    // MODE_INTERNAL: triggered opportunistically by ordinary GLPI page
+    // views (GLPI's own "internal cron" mechanism) - no system-level cron
+    // job or CLI access required, by design: this plugin has to work
+    // entirely from inside GLPI. The configured frequency (once a day)
+    // still governs how often it actually runs; MODE_INTERNAL only
+    // changes what triggers the check for "has a day passed yet", not
+    // the frequency itself. Trade-off: whichever request happens to
+    // trigger it will run the scan inline and feel a bit slower that day.
     CronTask::register(
         Issue::class,
         'scan',
         DAY_TIMESTAMP,
         [
             'comment' => __('Runs every enabled health check and updates the report. Never deletes/fixes data by itself.', 'sentinel'),
-            'mode'    => CronTask::MODE_EXTERNAL,
+            'mode'    => CronTask::MODE_INTERNAL,
         ]
     );
 
     foreach (SentinelProfile::getAllRights() as $right) {
-        ProfileRight::addProfileRights([$right['field']]);
+        // addProfileRights() does a plain INSERT per profile with no
+        // "already exists" check of its own - if a previous, incomplete
+        // install (or an uninstall that never ran) left rows behind,
+        // calling it again throws a duplicate-key fatal instead of just
+        // doing nothing. Only call it when truly needed.
+        $already_present = count($DB->request([
+            'FROM'  => ProfileRight::getTable(),
+            'WHERE' => ['name' => $right['field']],
+        ]));
+
+        if ($already_present === 0) {
+            ProfileRight::addProfileRights([$right['field']]);
+        }
     }
 
     // addProfileRights() above already inserted a row (rights = 0) for
