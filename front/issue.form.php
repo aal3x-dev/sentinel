@@ -37,6 +37,8 @@ if (isset($_POST['cleanup'])) {
 
     if ($issue->getFromDB($id)) {
         $is_file_issue = empty($issue->fields['source_table']) && !empty($issue->fields['path']);
+        $is_fk_issue   = $issue->fields['check_key'] === 'orphan_records'
+            && $issue->fields['field'] !== 'itemtype/items_id';
 
         echo "<div class='center'>";
         echo "<table class='tab_cadre_fixe'>";
@@ -80,12 +82,16 @@ if (isset($_POST['cleanup'])) {
             echo Html::submit(__('Dismiss report only', 'sentinel'), ['name' => 'purge']) . '&nbsp;';
         }
         if (Session::haveRight('plugin_sentinel', PURGE)) {
-            $cleanup_label = $is_file_issue
-                ? __('Delete file from disk permanently', 'sentinel')
-                : __('Delete orphan record permanently', 'sentinel');
-            $cleanup_confirm = $is_file_issue
-                ? __('This will permanently delete the file from disk. This cannot be undone. Continue?', 'sentinel')
-                : __('This will permanently delete the row from its original table. This cannot be undone. Continue?', 'sentinel');
+            if ($is_file_issue) {
+                $cleanup_label   = __('Delete file from disk permanently', 'sentinel');
+                $cleanup_confirm = __('This will permanently delete the file from disk. This cannot be undone. Continue?', 'sentinel');
+            } elseif ($is_fk_issue) {
+                $cleanup_label   = sprintf(__('Reset field "%s" to 0', 'sentinel'), $issue->fields['field']);
+                $cleanup_confirm = __('This will reset the dangling reference field back to 0, leaving the rest of the row untouched. Continue?', 'sentinel');
+            } else {
+                $cleanup_label   = __('Delete orphan record permanently', 'sentinel');
+                $cleanup_confirm = __('This will permanently delete the row from its original table. This cannot be undone. Continue?', 'sentinel');
+            }
             echo Html::submit($cleanup_label, [
                 'name'    => 'cleanup',
                 'class'   => 'btn btn-danger',

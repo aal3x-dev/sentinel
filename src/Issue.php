@@ -87,7 +87,14 @@ class Issue extends CommonDBTM
 
     public static function getMenuContent()
     {
-        $search = self::getReportURL();
+        // Menu 'page' entries are relative to GLPI's own root_doc - GLPI
+        // prefixes them with it when rendering the link. getReportURL()
+        // is already absolute-from-server-root (Plugin::getWebDir()
+        // includes the /glpi part), so using it here doubled the prefix
+        // (observed: /glpi/glpi/plugins/sentinel/...). Redirects
+        // (Html::redirect) need the absolute form and are unaffected -
+        // this relative form is only for the menu.
+        $search = 'plugins/sentinel/front/issue.php';
 
         return [
             'title' => __('Health checks', 'sentinel'),
@@ -292,7 +299,9 @@ class Issue extends CommonDBTM
         }
 
         if (!empty($this->fields['source_table'])) {
-            return $this->applyRowCleanup();
+            return $this->isClassicForeignKeyIssue()
+                ? $this->applyFieldReset()
+                : $this->applyRowCleanup();
         }
 
         if (!empty($this->fields['path'])) {
@@ -301,6 +310,48 @@ class Issue extends CommonDBTM
 
         // Neither a row nor a path is set - nothing to clean up besides
         // the bookkeeping row itself (should not normally happen).
+        return $this->delete(['id' => $this->getID()], true);
+    }
+
+    /**
+     * A classic-FK Issue (e.g. Computer.locations_id pointing at a
+     * deleted location) is one column gone stale on an otherwise valid
+     * row - the row itself is not the problem. Deleting the whole row
+     * (a Computer!) because one reference field is dangling would be
+     * far more destructive than the actual problem calls for. Only
+     * OrphanRecordsCheck's polymorphic detections (field is literally
+     * 'itemtype/items_id', the row's entire purpose) and DocumentsCheck
+     * rows still get the whole-row delete via applyRowCleanup().
+     */
+    private function isClassicForeignKeyIssue(): bool
+    {
+        return $this->fields['check_key'] === 'orphan_records'
+            && $this->fields['field'] !== 'itemtype/items_id';
+    }
+
+    /**
+     * Resets just the dangling FK column back to 0 (GLPI's own
+     * convention for "no relation"), leaving the rest of the row intact.
+     */
+    private function applyFieldReset(): bool
+    {
+        global $DB;
+
+        $table = $this->fields['source_table'];
+        $id    = (int) $this->fields['source_id'];
+        $field = $this->fields['field'];
+
+        if (!$this->isKnownGlpiTable($table) || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) {
+            Toolbox::logError("Sentinel: refused field reset on suspicious table/field '$table'.'$field'");
+            return false;
+        }
+
+        if (!$DB->tableExists($table)) {
+            return $this->delete(['id' => $this->getID()], true);
+        }
+
+        $DB->update($table, [$field => 0], ['id' => $id]);
+
         return $this->delete(['id' => $this->getID()], true);
     }
 

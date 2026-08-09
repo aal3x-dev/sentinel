@@ -22,12 +22,12 @@
    <readme>https://github.com/pluginsGLPI/sentinel/blob/main/README.md</readme>
    <authors>
       <!-- Add as many author tag you want -->
-      <author>Teclib'</author>
+      <author>aalex</author>
    </authors>
    <versions>
       <!-- Add as many version tag you want -->
       <version>
-         <num>0.3.1</num>
+         <num>0.3.4</num>
          <!-- Add as many compatibility tag you want -->
          <compatibility>~11.0.0</compatibility>
       </version>

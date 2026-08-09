@@ -117,43 +117,10 @@ function plugin_sentinel_install(): bool
         ]
     );
 
-    foreach (SentinelProfile::getAllRights() as $right) {
-        // addProfileRights() does a plain INSERT per profile with no
-        // "already exists" check of its own - if a previous, incomplete
-        // install (or an uninstall that never ran) left rows behind,
-        // calling it again throws a duplicate-key fatal instead of just
-        // doing nothing. Only call it when truly needed.
-        $already_present = count($DB->request([
-            'FROM'  => ProfileRight::getTable(),
-            'WHERE' => ['name' => $right['field']],
-        ]));
-
-        if ($already_present === 0) {
-            ProfileRight::addProfileRights([$right['field']]);
-        }
-    }
-
-    // addProfileRights() above already inserted a row (rights = 0) for
-    // EVERY profile, including the one we're installing from - so a
-    // naive "does it already exist" check would always be true and skip
-    // this block. Update it directly instead.
-    if (!empty($_SESSION['glpiactiveprofile']['id'])) {
-        $profileRight = new ProfileRight();
-        foreach (SentinelProfile::getAllRights() as $right) {
-            if ($profileRight->getFromDBByCrit([
-                'profiles_id' => $_SESSION['glpiactiveprofile']['id'],
-                'name'        => $right['field'],
-            ])) {
-                $profileRight->update([
-                    'id'     => $profileRight->getID(),
-                    'rights' => ALLSTANDARDRIGHT,
-                ]);
-            }
-        }
-        // Rights are cached in session at login time; refresh them now so
-        // the new permission is usable immediately, without a re-login.
-        Session::reloadCurrentProfile();
-    }
+    SentinelProfile::ensureRightsRegistered();
+    // Rights are cached in session at login time; refresh them now so
+    // the new permission is usable immediately, without a re-login.
+    Session::reloadCurrentProfile();
 
     return true;
 }

@@ -169,4 +169,58 @@ class Profile extends CommonDBTM
             $profileRight->add(['profiles_id' => $profiles_id, 'name' => 'plugin_sentinel', 'rights' => $rights]);
         }
     }
+
+    /**
+     * Ensures every profile has a row for our right (creating missing
+     * ones at 0), then grants full rights to whichever profile the
+     * current session is using. Shared by hook.php's install() AND by a
+     * self-heal check in setup.php's plugin_init - GLPI's plugin
+     * reactivation after a version bump has been observed to skip
+     * calling plugin_sentinel_install() again, silently going back to
+     * "Enabled" without re-granting rights. Rather than depend on
+     * exactly when GLPI decides to re-run install(), this can be called
+     * safely any time; it's a no-op once rights already exist for the
+     * active profile.
+     */
+    public static function ensureRightsRegistered(): bool
+    {
+        global $DB;
+
+        $changed = false;
+
+        foreach (self::getAllRights() as $right) {
+            $already_present = count($DB->request([
+                'FROM'  => \ProfileRight::getTable(),
+                'WHERE' => ['name' => $right['field']],
+            ]));
+
+            if ($already_present > 0) {
+                // Rows exist for this right somewhere - even a 0 here
+                // could be an admin's deliberate restriction on some
+                // other profile. Leave it alone; only a truly fresh
+                // (never-installed-correctly) state gets auto-repaired.
+                continue;
+            }
+
+            \ProfileRight::addProfileRights([$right['field']]);
+            $changed = true;
+
+            if (empty($_SESSION['glpiactiveprofile']['id'])) {
+                continue;
+            }
+
+            $profileRight = new \ProfileRight();
+            if ($profileRight->getFromDBByCrit([
+                'profiles_id' => $_SESSION['glpiactiveprofile']['id'],
+                'name'        => $right['field'],
+            ])) {
+                $profileRight->update([
+                    'id'     => $profileRight->getID(),
+                    'rights' => ALLSTANDARDRIGHT,
+                ]);
+            }
+        }
+
+        return $changed;
+    }
 }

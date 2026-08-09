@@ -32,7 +32,7 @@
  */
 
 /** @phpstan-ignore theCodingMachineSafe.function (safe to assume this isn't already defined) */
-define('PLUGIN_SENTINEL_VERSION', '0.3.1');
+define('PLUGIN_SENTINEL_VERSION', '0.3.4');
 
 // Minimal GLPI version, inclusive
 /** @phpstan-ignore theCodingMachineSafe.function (safe to assume this isn't already defined) */
@@ -57,6 +57,21 @@ function plugin_init_sentinel(): void
 
     Plugin::registerClass(Config::class, ['addtabon' => \Config::class]);
     Plugin::registerClass(Profile::class, ['addtabon' => \Profile::class]);
+
+    // Self-heal: GLPI's plugin reactivation after a version bump has been
+    // observed to go straight back to "Enabled" without re-running
+    // plugin_sentinel_install() - the only place rights normally get
+    // granted, which silently left every profile locked out. Rather than
+    // depend on exactly when GLPI decides to re-run install(), repair it
+    // here whenever the session shows the right missing. The cheap
+    // in-memory haveRight() check first means this costs nothing extra
+    // once things are in order - the DB queries only run for the
+    // profiles actually affected.
+    if (!Session::haveRight('plugin_sentinel', READ) && !empty($_SESSION['glpiactiveprofile']['id'])) {
+        if (Profile::ensureRightsRegistered()) {
+            Session::reloadCurrentProfile();
+        }
+    }
 
     if (Session::haveRight('plugin_sentinel', READ)) {
         $PLUGIN_HOOKS[Hooks::MENU_TOADD]['sentinel'] = [
@@ -93,7 +108,7 @@ function plugin_version_sentinel(): array
         'name'           => 'Sentinel',
         'version'        => PLUGIN_SENTINEL_VERSION,
         'author'         => '<a href="http://www.teclib.com">Teclib\'</a>',
-        'license'        => '',
+        'license'        => 'MIT',
         'homepage'       => '',
         'requirements'   => [
             'glpi' => [
