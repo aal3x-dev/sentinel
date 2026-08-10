@@ -80,6 +80,19 @@ class Issue extends CommonDBTM
         return Plugin::getWebDir('sentinel') . '/front/issue.php';
     }
 
+    /**
+     * Overridden for the same reason as getReportURL(): GLPI's default
+     * getFormURL() derives the path from the class's namespace, which
+     * hasn't been reliable for this plugin. Without this override, every
+     * row link in the Search results table (built by GLPI calling
+     * getFormURL()/getFormURLWithID() automatically) was silently
+     * broken/unclickable.
+     */
+    public static function getFormURL($full = true): string
+    {
+        return Plugin::getWebDir('sentinel') . '/front/issue.form.php';
+    }
+
     public static function getMenuName($nb = 0)
     {
         return self::getTypeName($nb);
@@ -224,7 +237,7 @@ class Issue extends CommonDBTM
 
         $options[] = [
             'id' => 1, 'table' => self::getTable(), 'field' => 'check_key',
-            'name' => __('Check', 'sentinel'), 'datatype' => 'string',
+            'name' => __('Check', 'sentinel'), 'datatype' => 'itemlink',
         ];
         $options[] = [
             'id' => 2, 'table' => self::getTable(), 'field' => 'category',
