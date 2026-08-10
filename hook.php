@@ -31,12 +31,12 @@
  * -------------------------------------------------------------------------
  */
 
-use CronTask;
-use DBConnection;
+// No `use` needed for CronTask, DBConnection, Migration, ProfileRight:
+// this file has no namespace of its own (it's global, like the classes
+// it references), so importing them was a no-op that GLPI flagged as a
+// warning every time it includes this file for search options.
 use GlpiPlugin\Sentinel\Issue;
 use GlpiPlugin\Sentinel\Profile as SentinelProfile;
-use Migration;
-use ProfileRight;
 
 /**
  * Plugin install process

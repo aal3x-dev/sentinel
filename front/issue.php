@@ -64,11 +64,19 @@ if (Session::haveRight('plugin_sentinel', READ)) {
 
 if (Session::haveRight('plugin_sentinel', UPDATE)) {
     $retention_days = (int) Config::getConfig()['retention_days'];
+    // Generated ONCE and reused in both forms below. Calling
+    // Session::getNewCSRFToken() separately per form was invalidating
+    // the first form's token the moment the second one rendered -
+    // GLPI only keeps the latest token valid, so the "Run all health
+    // checks now" button was already broken before the page even
+    // finished loading (matches what we saw: no debug output at all on
+    // the POST, meaning it was rejected before our code even ran).
+    $csrf_token = Session::getNewCSRFToken();
 
     echo "<div class='center d-flex justify-content-center gap-2' style='margin: 1em 0;'>";
 
-    echo "<form method='post' action='" . $_SERVER['PHP_SELF'] . "'>";
-    echo Html::hidden('_glpi_csrf_token', ['value' => Session::getNewCSRFToken()]);
+    echo "<form method='post' action=''>";
+    echo Html::hidden('_glpi_csrf_token', ['value' => $csrf_token]);
     echo Html::submit(__('Run all health checks now', 'sentinel'), [
         'name'  => 'scan_now',
         'class' => 'btn btn-primary',
@@ -76,8 +84,8 @@ if (Session::haveRight('plugin_sentinel', UPDATE)) {
     echo "</form>";
 
     if ($retention_days > 0) {
-        echo "<form method='post' action='" . $_SERVER['PHP_SELF'] . "'>";
-        echo Html::hidden('_glpi_csrf_token', ['value' => Session::getNewCSRFToken()]);
+        echo "<form method='post' action=''>";
+        echo Html::hidden('_glpi_csrf_token', ['value' => $csrf_token]);
         echo Html::submit(sprintf(
             __('Purge ignored issues older than %d days', 'sentinel'),
             $retention_days

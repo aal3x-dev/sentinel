@@ -73,7 +73,7 @@ if (isset($_POST['cleanup'])) {
         }
         echo "</table>";
 
-        echo "<form method='post' action='" . $_SERVER['PHP_SELF'] . "' style='margin-top:1em;'>";
+        echo "<form method='post' action='' style='margin-top:1em;'>";
         echo Html::hidden('id', ['value' => $id]);
         echo Html::hidden('_glpi_csrf_token', ['value' => Session::getNewCSRFToken()]);
 
