@@ -186,6 +186,66 @@ class Config extends GlpiConfig
         echo "</div>";
     }
 
+    /**
+     * Status summary at the top of the settings page: last scan time and
+     * open-issue count, with green/orange indicators - same visual
+     * language as GLPI's own Setup > General > Performance page (a
+     * green check for "fine", a colored badge when something needs
+     * attention), so this panel reads as part of the same system
+     * instead of a bolted-on plugin screen.
+     */
+    private static function showStatusCard(): void
+    {
+        global $DB;
+
+        $last = self::getLastScanResult();
+        // BUG FIX: this queried the Issue table unconditionally - in a
+        // partial/broken install state (table not created yet) this would
+        // throw the exact same "table doesn't exist" fatal we've hit
+        // several times already, on the one page an admin would open to
+        // investigate. Guard it.
+        $open_count = $DB->tableExists(Issue::getTable())
+            ? (int) count($DB->request([
+                'FROM'  => Issue::getTable(),
+                'WHERE' => ['status' => Issue::STATUS_NEW],
+            ]))
+            : 0;
+
+        echo "<div class='card mb-3'>";
+        echo "<div class='card-body'>";
+        echo "<div class='d-flex align-items-center justify-content-between flex-wrap gap-3'>";
+
+        echo "<div class='d-flex align-items-center gap-2'>";
+        if ($last['at'] === null) {
+            echo "<i class='ti ti-help-circle text-muted' style='font-size:1.5em;'></i>";
+            echo "<span>" . __('No scan has run yet.', 'sentinel') . "</span>";
+        } else {
+            echo "<i class='ti ti-circle-check text-success' style='font-size:1.5em;'></i>";
+            echo "<span>" . sprintf(
+                __('Last scan: %s', 'sentinel'),
+                Html::convDateTime($last['at'])
+            ) . "</span>";
+        }
+        echo "</div>";
+
+        echo "<div class='d-flex align-items-center gap-2'>";
+        if ($open_count > 0) {
+            echo "<i class='ti ti-alert-triangle text-warning' style='font-size:1.5em;'></i>";
+            echo "<span class='badge bg-warning text-dark'>" . sprintf(
+                _n('%d open issue', '%d open issues', $open_count, 'sentinel'),
+                $open_count
+            ) . "</span>";
+        } else {
+            echo "<i class='ti ti-circle-check text-success' style='font-size:1.5em;'></i>";
+            echo "<span class='badge bg-success'>" . __('No open issues', 'sentinel') . "</span>";
+        }
+        echo "</div>";
+
+        echo "</div>";
+        echo "</div>";
+        echo "</div>";
+    }
+
     public static function showForConfig(): void
     {
         if (!self::canView()) {
@@ -232,8 +292,10 @@ class Config extends GlpiConfig
             echo "</div></div>"; // .card-body .card
         };
 
-        echo "<form name='form' action='' method='post' class='mt-3' style='max-width: 900px;'>";
+        echo "<form name='form' action='' method='post' class='mt-3' style='max-width: 1100px;'>";
         echo Html::hidden('_glpi_csrf_token', ['value' => Session::getNewCSRFToken()]);
+
+        self::showStatusCard();
 
         $section('ti-database', __('Database checks', 'sentinel'));
 
@@ -246,12 +308,12 @@ class Config extends GlpiConfig
         }, __('Resolved from column names; ambiguous ones are skipped, never guessed.', 'sentinel'));
 
         $field(__('Excluded tables', 'sentinel'), function () use ($ro, $config) {
-            echo "<textarea name='excluded_tables' class='form-control' rows='2' $ro>"
+            echo "<textarea name='excluded_tables' class='form-control font-monospace' style='font-size:0.9em;' rows='2' $ro>"
                 . htmlspecialchars($config['excluded_tables']) . "</textarea>";
         }, __('Comma separated.', 'sentinel'));
 
         $field(__('Excluded fields', 'sentinel'), function () use ($ro, $config) {
-            echo "<textarea name='excluded_fields' class='form-control' rows='2' $ro>"
+            echo "<textarea name='excluded_fields' class='form-control font-monospace' style='font-size:0.9em;' rows='2' $ro>"
                 . htmlspecialchars($config['excluded_fields']) . "</textarea>";
         }, __('Format table.field, comma separated.', 'sentinel'));
 

@@ -35,6 +35,7 @@
 // this file has no namespace of its own (it's global, like the classes
 // it references), so importing them was a no-op that GLPI flagged as a
 // warning every time it includes this file for search options.
+use GlpiPlugin\Sentinel\Config;
 use GlpiPlugin\Sentinel\Issue;
 use GlpiPlugin\Sentinel\Profile as SentinelProfile;
 
@@ -146,8 +147,17 @@ function plugin_sentinel_uninstall(): bool
         ProfileRight::deleteProfileRights([$right['field']]);
     }
 
-    // CronTask entries and plugin config (glpi_configs) are cleaned up
-    // automatically by GLPI core on plugin uninstall.
+    // BUG FIX: this used to just assume GLPI core cleans up glpi_configs
+    // entries for a plugin's context on uninstall, without ever verifying
+    // that claim. If it's wrong, every setting (excluded_tables,
+    // last_scan_stats, etc.) is left behind forever under context
+    // 'plugin:sentinel' - orphaned config data, which would be a little too
+    // on-the-nose for a plugin whose whole purpose is finding exactly that.
+    // Clean it up explicitly instead of trusting an unverified assumption.
+    $DB->delete('glpi_configs', ['context' => Config::CONTEXT]);
+
+    // CronTask entries are cleaned up automatically by GLPI core on
+    // plugin uninstall.
 
     return true;
 }

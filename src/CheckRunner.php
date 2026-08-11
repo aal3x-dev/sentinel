@@ -57,11 +57,12 @@ class CheckRunner
         $config     = Config::getConfig();
         $scan_start = date('Y-m-d H:i:s');
         $stats = [
-            'checks_run'     => 0,
-            'new'            => 0,
-            'confirmed'      => 0,
-            'resolved'       => 0,
-            'skipped_fields' => 0,
+            'checks_run'                 => 0,
+            'new'                        => 0,
+            'confirmed'                  => 0,
+            'resolved'                   => 0,
+            'skipped_fields'             => 0,
+            'filesystem_scan_truncated'  => false,
         ];
 
         foreach (self::REGISTRY as $class) {

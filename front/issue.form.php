@@ -11,9 +11,21 @@ $issue = new Issue();
 if (isset($_POST['cleanup'])) {
     // "Limpieza": actually deletes the orphan row or file, then the Issue itself.
     Session::checkRight('plugin_sentinel', PURGE);
-    $issue->getFromDB((int) $_POST['id']);
-    $issue->applyCleanup();
-    Html::back();
+    // BUG FIX: didn't check getFromDB()'s return value - on a nonexistent
+    // ID (e.g. a stale/reused tab, or a concurrent double-click) this
+    // silently called applyCleanup() on an empty Issue, which happened to
+    // no-op harmlessly, but gave no indication anything was wrong.
+    if ($issue->getFromDB((int) $_POST['id'])) {
+        $issue->applyCleanup();
+        Session::addMessageAfterRedirect(__('Cleaned up.', 'sentinel'));
+    } else {
+        Session::addMessageAfterRedirect(__('That issue no longer exists - it may have already been resolved.', 'sentinel'), false, WARNING);
+    }
+    // Html::back() would return here to this same ?id=X URL, but that
+    // Issue (and possibly the row/file it pointed to) is gone now -
+    // reloading it would just show "not found". Go to the list instead,
+    // same as "purge" below.
+    Html::redirect(Issue::getReportURL());
 } elseif (isset($_POST['ignore'])) {
     Session::checkRight('plugin_sentinel', UPDATE);
     $issue->update([
@@ -40,20 +52,23 @@ if (isset($_POST['cleanup'])) {
         $is_fk_issue   = $issue->fields['check_key'] === 'orphan_records'
             && $issue->fields['field'] !== 'itemtype/items_id';
 
-        echo "<div class='center'>";
+        echo "<div class='center' style='max-width: 800px; margin-left:auto; margin-right:auto;'>";
+
+        // Plain-language summary first - this is what most people need to
+        // understand the issue. The technical breakdown below is there
+        // for anyone who wants to double-check exactly what was found.
+        echo "<div class='alert alert-info' style='text-align:left; font-size:1.1em; margin-bottom:1em;'>";
+        echo htmlspecialchars($issue->getHumanSummary());
+        echo "</div>";
+
         echo "<table class='tab_cadre_fixe'>";
-        $title = $is_file_issue
-            ? htmlspecialchars($issue->fields['path'])
-            : htmlspecialchars(sprintf(
-                __('%1$s #%2$d', 'sentinel'),
-                $issue->fields['source_table'],
-                $issue->fields['source_id']
-            ));
-        echo "<tr><th colspan='2'>" . $title . "</th></tr>";
+        echo "<tr><th colspan='2'>" . __('Technical details', 'sentinel') . "</th></tr>";
 
         $rows = [
-            __('Check', 'sentinel')           => $issue->fields['check_key'],
-            __('Category', 'sentinel')        => $issue->fields['category'],
+            __('Check', 'sentinel')           => Issue::getCheckLabel($issue->fields['check_key']),
+            __('Category', 'sentinel')        => Issue::getCategoryLabel($issue->fields['category']),
+            __('Table', 'sentinel')           => $issue->fields['source_table'],
+            __('Row ID', 'sentinel')          => $issue->fields['source_id'],
             __('Field', 'sentinel')           => $issue->fields['field'],
             __('File path', 'sentinel')       => $issue->fields['path'],
             __('Referenced itemtype', 'sentinel') => $issue->fields['ref_itemtype'],

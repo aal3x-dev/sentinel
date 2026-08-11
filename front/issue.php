@@ -26,6 +26,13 @@ if (isset($_POST['scan_now'])) {
         $stats['confirmed'],
         $stats['resolved']
     ));
+    if (!empty($stats['filesystem_scan_truncated'])) {
+        Session::addMessageAfterRedirect(
+            __('The orphan-file scan hit its per-run limit before finishing the whole documents folder - some files may not have been checked this time. Consider increasing "Rows/files processed per batch" in settings.', 'sentinel'),
+            false,
+            WARNING
+        );
+    }
     Html::redirect(Issue::getReportURL());
 }
 

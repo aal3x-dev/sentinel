@@ -87,9 +87,18 @@ class Issue extends CommonDBTM
      * row link in the Search results table (built by GLPI calling
      * getFormURL()/getFormURLWithID() automatically) was silently
      * broken/unclickable.
+     *
+     * BUG FIX: originally ignored $full and always returned the absolute
+     * form - if any GLPI-internal caller ever passes $full=false expecting
+     * a root_doc-relative path (the same convention getMenuContent() had
+     * to follow to avoid a doubled /glpi/glpi/ prefix), it would have hit
+     * the exact same bug through a different, untested code path.
      */
     public static function getFormURL($full = true): string
     {
+        if (!$full) {
+            return 'plugins/sentinel/front/issue.form.php';
+        }
         return Plugin::getWebDir('sentinel') . '/front/issue.form.php';
     }
 
@@ -175,6 +184,7 @@ class Issue extends CommonDBTM
             $row = $existing->current();
             $DB->update(self::getTable(), [
                 'date_last_seen' => $scan_start,
+                'category'       => $data['category'],
                 'ref_id'         => $data['ref_id'],
                 'reason'         => $data['reason'],
             ], ['id' => $row['id']]);
@@ -230,6 +240,141 @@ class Issue extends CommonDBTM
         return $DB->affectedRows();
     }
 
+    /**
+     * Human label for a check_key, sourced from the Check class itself
+     * (CheckInterface::getLabel()) so there's one place that owns the
+     * wording, not a copy duplicated here that could drift out of sync.
+     */
+    public static function getCheckLabel(string $check_key): string
+    {
+        foreach (CheckRunner::getChecks() as $check) {
+            if ($check->getKey() === $check_key) {
+                return $check->getLabel();
+            }
+        }
+        return $check_key;
+    }
+
+    public static function getCategoryLabel(string $category): string
+    {
+        return match ($category) {
+            'database'   => __('Database', 'sentinel'),
+            'filesystem' => __('Filesystem', 'sentinel'),
+            default      => $category,
+        };
+    }
+
+    /**
+     * Human name for a GLPI table: resolves it back to its itemtype and
+     * asks that class for its own display name (singular), instead of
+     * showing raw table names like "glpi_computers" to someone who has
+     * no reason to know GLPI's internal schema.
+     */
+    private static function humanTableName(?string $table): string
+    {
+        if (empty($table)) {
+            return __('unknown', 'sentinel');
+        }
+
+        $itemtype = getItemTypeForTable($table);
+        if ($itemtype === 'UNKNOWN' || !is_a($itemtype, CommonDBTM::class, true)) {
+            // Not a core/plugin itemtype table GLPI recognizes by name -
+            // still better than the raw glpi_-prefixed name.
+            return str_replace('_', ' ', preg_replace('/^glpi_/', '', $table));
+        }
+
+        return $itemtype::getTypeName(1);
+    }
+
+    /**
+     * One-sentence, plain-language description of this Issue - no table
+     * names, no field internals - for people who don't know (or care)
+     * how GLPI's database is put together. Used both on the detail page
+     * and as the report list's "Description" column.
+     */
+    public function getHumanSummary(): string
+    {
+        $check_key = $this->fields['check_key'] ?? '';
+        $field     = $this->fields['field'] ?? '';
+
+        if ($check_key === 'orphan_records' && $field === 'itemtype/items_id') {
+            $source_label = self::humanTableName($this->fields['source_table'] ?? null);
+
+            if (str_contains((string) ($this->fields['reason'] ?? ''), 'class no longer exists')) {
+                return sprintf(
+                    __('A "%1$s" record refers to a kind of item ("%2$s") that no longer exists in this system - most likely a plugin that was uninstalled.', 'sentinel'),
+                    $source_label,
+                    $this->fields['ref_itemtype']
+                );
+            }
+
+            $ref_label = is_string($this->fields['ref_itemtype'] ?? null) && is_a($this->fields['ref_itemtype'], CommonDBTM::class, true)
+                ? $this->fields['ref_itemtype']::getTypeName(1)
+                : $this->fields['ref_itemtype'];
+
+            return sprintf(
+                __('A "%1$s" record refers to a %2$s that has been deleted.', 'sentinel'),
+                $source_label,
+                $ref_label
+            );
+        }
+
+        if ($check_key === 'orphan_records') {
+            // Classic dangling foreign key - the row itself still exists,
+            // only one field on it is stale, so try to show its real name.
+            $item_label   = $this->describeExistingRow();
+            $target_label = self::humanTableName($this->fields['ref_table'] ?? null);
+
+            return sprintf(
+                __('%1$s references a %2$s that has been deleted.', 'sentinel'),
+                $item_label,
+                $target_label
+            );
+        }
+
+        if ($check_key === 'documents' && $field === 'filepath') {
+            return sprintf(
+                __('A document record exists, but its file is missing from the server (expected at "%s").', 'sentinel'),
+                $this->fields['path']
+            );
+        }
+
+        if ($check_key === 'documents') {
+            return sprintf(
+                __('A file was found on the server ("%s") that no document record refers to.', 'sentinel'),
+                $this->fields['path']
+            );
+        }
+
+        return $this->fields['reason'] ?? '';
+    }
+
+    /**
+     * For a classic-FK issue the source row still exists (only the
+     * dangling field is the problem) - fetch its own name so the
+     * summary can say "Computer 'PC Descartable'" instead of a raw
+     * table+id pair.
+     */
+    private function describeExistingRow(): string
+    {
+        $table = $this->fields['source_table'] ?? '';
+        $id    = (int) ($this->fields['source_id'] ?? 0);
+        $label = self::humanTableName($table);
+
+        $itemtype = getItemTypeForTable($table);
+        if ($itemtype !== 'UNKNOWN' && is_a($itemtype, CommonDBTM::class, true)) {
+            $item = new $itemtype();
+            if ($item->getFromDB($id)) {
+                $name = method_exists($item, 'getName') ? $item->getName() : ($item->fields['name'] ?? null);
+                if (!empty($name)) {
+                    return sprintf('%1$s "%2$s"', $label, $name);
+                }
+            }
+        }
+
+        return sprintf('%1$s #%2$d', $label, $id);
+    }
+
     public function rawSearchOptions()
     {
         $options   = [];
@@ -238,6 +383,19 @@ class Issue extends CommonDBTM
         $options[] = [
             'id' => 1, 'table' => self::getTable(), 'field' => 'check_key',
             'name' => __('Check', 'sentinel'), 'datatype' => 'itemlink',
+        ];
+        $options[] = [
+            'id'    => 14,
+            'table' => self::getTable(),
+            'field' => 'id', // no real "description" column - reuses 'id' as the anchor; getSpecificValueToDisplay() computes the actual text below
+            'name'  => __('Description', 'sentinel'),
+            'datatype'        => 'specific',
+            'massiveaction'   => false,
+            'nosort'          => true,
+            'additionalfields' => [
+                'check_key', 'source_table', 'source_id', 'path', 'field',
+                'ref_itemtype', 'ref_table', 'reason',
+            ],
         ];
         $options[] = [
             'id' => 2, 'table' => self::getTable(), 'field' => 'category',
@@ -289,6 +447,31 @@ class Issue extends CommonDBTM
         ];
 
         return $options;
+    }
+
+    /**
+     * Renders the "Description" search column (see rawSearchOptions()).
+     * $values contains the row's raw columns (thanks to
+     * 'additionalfields') even though the option's own 'field' is just
+     * 'id' - reused here to build a throwaway Issue instance so
+     * getHumanSummary() can work off real ->fields data.
+     */
+    public static function getSpecificValueToDisplay($field, $values, array $options = [])
+    {
+        // BUG FIX: this used to check array_key_exists('check_key', $values)
+        // as a proxy for "is this our synthetic Description column" - it
+        // happened to work only because no OTHER 'specific' option (like
+        // 'status') requests check_key via additionalfields, which is
+        // fragile (a future option could break it silently). $field is the
+        // option's own 'field' value ('id' for ours, 'status' for that
+        // one) - check that directly instead.
+        if ($field === 'id' && is_array($values) && array_key_exists('check_key', $values)) {
+            $item = new self();
+            $item->fields = $values;
+            return htmlspecialchars($item->getHumanSummary());
+        }
+
+        return parent::getSpecificValueToDisplay($field, $values, $options);
     }
 
     /**

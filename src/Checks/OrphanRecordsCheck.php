@@ -69,6 +69,9 @@ class OrphanRecordsCheck implements CheckInterface
     /** @var array<string,bool> cache of $DB->tableExists() lookups for this run */
     private array $tableExistsCache = [];
 
+    /** @var array<string,string[]> cache of getColumns() per table for this run */
+    private array $columnsCache = [];
+
     public function getKey(): string
     {
         return 'orphan_records';
@@ -93,6 +96,7 @@ class OrphanRecordsCheck implements CheckInterface
     {
         $this->classExistsCache = [];
         $this->tableExistsCache = [];
+        $this->columnsCache     = [];
 
         $schema = $this->getSchemaName();
         $tables = $this->listScannableTables($schema, $config);
@@ -156,6 +160,15 @@ class OrphanRecordsCheck implements CheckInterface
     {
         global $DB;
 
+        // BUG FIX: was called once per table from EACH of the two scan
+        // methods (polymorphic + foreign keys) whenever both are enabled
+        // (the default) - doubling the information_schema.COLUMNS queries
+        // for every single table scanned. Cached here like the other
+        // per-run lookups in this class.
+        if (isset($this->columnsCache[$table])) {
+            return $this->columnsCache[$table];
+        }
+
         $iterator = $DB->request([
             'SELECT' => 'COLUMN_NAME',
             'FROM'   => 'information_schema.COLUMNS',
@@ -170,7 +183,7 @@ class OrphanRecordsCheck implements CheckInterface
             $columns[] = $row['COLUMN_NAME'];
         }
 
-        return $columns;
+        return $this->columnsCache[$table] = $columns;
     }
 
     private function scanPolymorphicForTable(

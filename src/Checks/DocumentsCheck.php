@@ -203,6 +203,13 @@ class DocumentsCheck implements CheckInterface
 
         foreach ($iterator_fs as $fileinfo) {
             if ($scanned >= $limit) {
+                // BUG FIX: this used to stop silently, with no signal that
+                // the walk was incomplete. For a documents tree bigger than
+                // the limit, every run stopped at roughly the same point
+                // (filesystem iteration order is stable in practice), so
+                // whatever came after was never scanned, ever - a real,
+                // invisible coverage gap. Now at least it shows up in stats.
+                $stats['filesystem_scan_truncated'] = true;
                 break;
             }
 

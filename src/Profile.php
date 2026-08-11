@@ -214,9 +214,16 @@ class Profile extends CommonDBTM
                 'profiles_id' => $_SESSION['glpiactiveprofile']['id'],
                 'name'        => $right['field'],
             ])) {
+                // BUG FIX: was ALLSTANDARDRIGHT (31 = READ|UPDATE|CREATE|
+                // DELETE|PURGE), but this plugin never checks CREATE or
+                // DELETE anywhere - only READ (view report), UPDATE (run
+                // scans, ignore/dismiss) and PURGE (actually delete data).
+                // Granting the unused bits made the raw rights value
+                // misleading (looks like "everything" when 2 of the 5
+                // bits do nothing).
                 $profileRight->update([
                     'id'     => $profileRight->getID(),
-                    'rights' => ALLSTANDARDRIGHT,
+                    'rights' => READ | UPDATE | PURGE,
                 ]);
             }
         }
